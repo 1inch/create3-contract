@@ -1,0 +1,7 @@
+# Rust
+/target
+
+# Foundry
+/out
+/cache
+/broadcast

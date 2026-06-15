@@ -1,0 +1,15 @@
+[package]
+name = "create3-miner"
+version = "0.1.0"
+edition = "2024"
+
+[profile.release]
+lto = true
+codegen-units = 1
+
+[dependencies]
+clap = "4.6.1"
+hex = "0.4.3"
+rand = "0.10.1"
+regex = "1.12.4"
+tiny-keccak = { version = "2.0.2", features = ["keccak"] }

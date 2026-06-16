@@ -40,6 +40,8 @@ cargo run --release -- <factory address> <pattern>
 cargo run --release -- <factory address> --leading <hex prefix>
 ```
 
+The repo ships a [`.cargo/config.toml`](.cargo/config.toml) that builds with `-C target-cpu=native`, so release builds automatically use chip-specific instructions (e.g. NEON on Apple Silicon) for extra throughput. No environment variables are needed; a plain `cargo build --release` or `cargo run --release` picks it up. The resulting binary is tuned for the build machine and is not portable to other CPUs.
+
 ### Leading prefix (fast path)
 
 For a vanity prefix, prefer `--leading`. It compares the address bytes directly, skipping hex encoding and the regex engine, which is a few percent faster on long searches. The prefix is case-insensitive and may include an optional `0x`.

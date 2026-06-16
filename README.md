@@ -33,18 +33,30 @@ forge script script/DeployCreate3Deployer.s.sol --rpc-url <rpc> --private-key <k
 
 ## The miner
 
-Once the factory is deployed, the miner brute-forces a CREATE3 salt so the deployed contract address matches a pattern.
+Once the factory is deployed, the miner brute-forces a CREATE3 salt so the deployed contract address matches a pattern. You can match either an exact leading hex prefix (the fast path) or an arbitrary regex.
 
 ```bash
 cargo run --release -- <factory address> <pattern>
+cargo run --release -- <factory address> --leading <hex prefix>
 ```
 
-The pattern is a regex matched against the 40-character lowercase hex address (without the `0x` prefix). Matching is case-insensitive.
+### Leading prefix (fast path)
+
+For a vanity prefix, prefer `--leading`. It compares the address bytes directly, skipping hex encoding and the regex engine, which is a few percent faster on long searches. The prefix is case-insensitive and may include an optional `0x`.
 
 ```bash
-# Address starts with dead
-cargo run --release -- 0x9fBB3DF7C40Da2e5A0dE984fFE2CCB7C47cd0ABf '^dead'
+# Address starts with nine zeros
+cargo run --release -- 0x9fBB3DF7C40Da2e5A0dE984fFE2CCB7C47cd0ABf --leading 000000000
 
+# Address starts with dead
+cargo run --release -- 0x9fBB3DF7C40Da2e5A0dE984fFE2CCB7C47cd0ABf --leading dead
+```
+
+### Regex (suffixes, anywhere, alternation)
+
+The positional pattern is a regex matched against the 40-character lowercase hex address (without the `0x` prefix). Matching is case-insensitive. Use it for anything `--leading` cannot express, such as suffixes or alternation.
+
+```bash
 # Address ends with beef
 cargo run --release -- 0x9fBB3DF7C40Da2e5A0dE984fFE2CCB7C47cd0ABf 'beef$'
 
@@ -56,11 +68,22 @@ cargo run --release -- 0x9fBB3DF7C40Da2e5A0dE984fFE2CCB7C47cd0ABf '^0{8}'
 cargo run --release -- 0x9fBB3DF7C40Da2e5A0dE984fFE2CCB7C47cd0ABf '(dead|beef)$'
 ```
 
+You must provide exactly one of the positional regex or `--leading`.
+
+### Thread count
+
+By default the miner uses all available cores. On hybrid CPUs (for example Apple Silicon with performance and efficiency cores) the slower efficiency cores can drag down the aggregate hash rate, so restricting to the performance core count is sometimes faster.
+
+```bash
+# Use 12 worker threads (e.g. only the performance cores)
+cargo run --release -- 0x9fBB3DF7C40Da2e5A0dE984fFE2CCB7C47cd0ABf --leading 000000000 --threads 12
+```
+
 Example output:
 
 ```text
 Factory:  0x9fBB3DF7C40Da2e5A0dE984fFE2CCB7C47cd0ABf
-Pattern:  ^dead (case-insensitive)
+Pattern:  ^dead (regex, case-insensitive)
 Threads:  16
 Mining...
 
@@ -87,7 +110,7 @@ The contract will land on the printed address regardless of its creation code.
 
 ## Performance
 
-The miner uses all CPU cores; each worker starts from a random salt and increments sequentially, reusing preallocated hash buffers (two keccak256 per attempt). Expect on the order of 1 MH/s per core. Every additional constrained hex character multiplies the expected search time by 16:
+By default the miner uses all CPU cores (override with `--threads`); each worker starts from a random salt and increments sequentially, reusing preallocated hash buffers (two keccak256 per attempt). Expect on the order of 1 MH/s per core. Every additional constrained hex character multiplies the expected search time by 16:
 
 | Constrained chars | Expected attempts |
 | ----------------- | ----------------- |

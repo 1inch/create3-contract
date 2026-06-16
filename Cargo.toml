@@ -12,4 +12,4 @@ clap = "4.6.1"
 hex = "0.4.3"
 rand = "0.10.1"
 regex = "1.12.4"
-tiny-keccak = { version = "2.0.2", features = ["keccak"] }
+sha3 = "0.10"

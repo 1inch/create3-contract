@@ -1,0 +1,5 @@
+[build]
+# Compile for the host CPU so the miner can use chip-specific instructions
+# (e.g. NEON on Apple Silicon, AVX on x86). Produces a non-portable binary
+# tuned for the machine that builds it.
+rustflags = ["-C", "target-cpu=native"]

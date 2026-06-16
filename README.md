@@ -7,7 +7,7 @@ The repo has two parts that work together:
 1. **The deployer** ([contracts/](contracts/)) — an `Ownable` `Create3Deployer` that deploys contracts at addresses which depend only on the factory address and a salt, independent of the contract's creation code.
 2. **The miner** — a multi-threaded Rust tool that brute-forces a salt so the resulting deploy address matches a pattern you choose. It ships as two binaries that share all logic ([src/lib.rs](src/lib.rs)):
    - `create3-miner` ([src/main.rs](src/main.rs)) — portable scalar miner, runs everywhere.
-   - `create3-miner-neon` ([src/bin/create3-miner-neon.rs](src/bin/create3-miner-neon.rs)) — ARM NEON (aarch64) build that hashes two salts per keccak permutation; roughly **1.8× faster** on Apple Silicon. This is the default binary for `cargo run`.
+   - `create3-miner-neon` ([src/bin/create3-miner-neon.rs](src/bin/create3-miner-neon.rs)) — ARM NEON (aarch64) build that hashes two salts per keccak permutation and, when available, uses the ARMv8 SHA3 crypto extension (fused EOR3/RAX1/XAR/BCAX) with a runtime fallback to base NEON. Roughly **2.5× faster** than the scalar miner on Apple Silicon. This is the default binary for `cargo run`.
 
 ## The deployer
 
@@ -55,6 +55,11 @@ cargo run --release --bin create3-miner -- <factory> --leading <hex>
 ```
 
 On non-aarch64 platforms `create3-miner-neon` compiles to a stub that exits with a message telling you to use `create3-miner` instead, so the whole workspace still builds everywhere. Both binaries accept identical flags.
+
+At startup the NEON binary prints which keccak backend it selected (`NEON+SHA3` or `NEON`) and the buffer width. The SHA3 extension is detected at runtime (`is_aarch64_feature_detected!("sha3")`); on chips without it the miner transparently falls back to base NEON. Two NEON-only flags are available:
+
+- `--buffers <N>` (1-4): number of independent keccak states processed per batch. Default is `1`; larger values were slower in benchmarks because the 25-vector keccak state already spills past the 32 NEON registers, so extra buffers only add spill traffic. Kept for experimentation.
+- `--no-sha3`: force the base NEON path even when the SHA3 extension exists (useful for benchmarking its contribution).
 
 The repo ships a [`.cargo/config.toml`](.cargo/config.toml) that builds with `-C target-cpu=native`, so release builds automatically use chip-specific instructions (e.g. NEON on Apple Silicon) for extra throughput. No environment variables are needed; a plain `cargo build --release` or `cargo run --release` picks it up. The resulting binary is tuned for the build machine and is not portable to other CPUs.
 
@@ -145,7 +150,17 @@ The contract will land on the printed address regardless of its creation code.
 
 ## Performance
 
-By default the miner uses all CPU cores (override with `--threads`); each worker starts from a random salt and increments sequentially, reusing preallocated hash buffers (two keccak256 per attempt). The NEON binary hashes two salts per keccak permutation by packing each state into 128-bit lanes (2 × `u64`), using `vsri`-based constant rotations so its per-lane cost matches a scalar `ror` — about 1.8× the scalar throughput on Apple Silicon. Every additional constrained hex character multiplies the expected search time by 16:
+By default the miner uses all CPU cores (override with `--threads`); each worker starts from a random salt and increments sequentially, reusing preallocated hash buffers (two keccak256 per attempt). The NEON binary hashes two salts per keccak permutation by packing each state into 128-bit lanes (2 × `u64`), precomputes the constant input words so only the salt counter is rewritten per attempt, and on SHA3-capable chips uses the fused EOR3/RAX1/XAR/BCAX instructions. Every additional constrained hex character multiplies the expected search time by 16.
+
+Indicative throughput at 8 threads on an Apple Silicon laptop (single `--leading` search):
+
+| Build | MH/s | vs scalar |
+| ----- | ---- | --------- |
+| `create3-miner` (scalar `sha3` crate) | ~25 | 1.0× |
+| `create3-miner-neon --no-sha3` (base NEON x2) | ~47 | ~1.9× |
+| `create3-miner-neon` (NEON + SHA3 ext) | ~61 | ~2.5× |
+
+Expected attempts per constrained-character count:
 
 | Constrained chars | Expected attempts |
 | ----------------- | ----------------- |

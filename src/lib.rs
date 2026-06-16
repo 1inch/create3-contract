@@ -230,6 +230,12 @@ impl MiningContext {
     }
 }
 
+/// Default multi-buffering width for the NEON miner (independent keccak states
+/// processed per batch). Benchmarking on Apple Silicon shows 1 is fastest: the
+/// 25-vector keccak state already spills past 32 NEON registers, so additional
+/// buffers only add spill traffic. The flag is kept for experimentation.
+pub const DEFAULT_NEON_BUFFERS: usize = 1;
+
 /// Resolved command-line configuration shared by both miners.
 pub struct Config {
     pub factory: [u8; 20],
@@ -237,6 +243,10 @@ pub struct Config {
     pub mode_desc: String,
     pub threads: usize,
     pub code_hash: [u8; 32],
+    /// NEON only: number of independent keccak states per batch (1..=4).
+    pub neon_buffers: usize,
+    /// NEON only: force the base NEON path even if the SHA3 extension exists.
+    pub force_base_keccak: bool,
 }
 
 /// Builds the CLI, parses args, and resolves them into a [`Config`].
@@ -267,6 +277,21 @@ pub fn parse_cli(bin_name: &'static str) -> Config {
                 .long("threads")
                 .value_name("N")
                 .help("Number of worker threads (default: all available cores)"),
+        )
+        .arg(
+            Arg::new("buffers")
+                .long("buffers")
+                .value_name("N")
+                .help(
+                    "NEON only: independent keccak states processed per batch (1-4). \
+                     Higher can raise IPC at the cost of register pressure",
+                ),
+        )
+        .arg(
+            Arg::new("no-sha3")
+                .long("no-sha3")
+                .action(clap::ArgAction::SetTrue)
+                .help("NEON only: disable the ARMv8 SHA3 extension path (for benchmarking)"),
         )
         .arg(
             Arg::new("bytecode")
@@ -366,12 +391,27 @@ pub fn parse_cli(bin_name: &'static str) -> Config {
         DEFAULT_PROXY_CODE_HASH
     };
 
+    let neon_buffers = match matches.get_one::<String>("buffers") {
+        Some(s) => match s.parse::<usize>() {
+            Ok(n) if (1..=4).contains(&n) => n,
+            _ => {
+                eprintln!("error: --buffers must be an integer in 1..=4");
+                std::process::exit(1);
+            }
+        },
+        None => DEFAULT_NEON_BUFFERS,
+    };
+
+    let force_base_keccak = matches.get_flag("no-sha3");
+
     Config {
         factory,
         mode,
         mode_desc,
         threads,
         code_hash,
+        neon_buffers,
+        force_base_keccak,
     }
 }
 

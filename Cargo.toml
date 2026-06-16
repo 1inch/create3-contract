@@ -2,6 +2,19 @@
 name = "create3-miner"
 version = "0.1.0"
 edition = "2024"
+default-run = "create3-miner-neon"
+
+[lib]
+name = "create3_miner"
+path = "src/lib.rs"
+
+[[bin]]
+name = "create3-miner"
+path = "src/main.rs"
+
+[[bin]]
+name = "create3-miner-neon"
+path = "src/bin/create3-miner-neon.rs"
 
 [profile.release]
 lto = true

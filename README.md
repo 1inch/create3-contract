@@ -5,7 +5,9 @@ A CREATE3 deployer contract and a companion tool that mines vanity salts for it.
 The repo has two parts that work together:
 
 1. **The deployer** ([contracts/](contracts/)) — an `Ownable` `Create3Deployer` that deploys contracts at addresses which depend only on the factory address and a salt, independent of the contract's creation code.
-2. **The miner** ([src/main.rs](src/main.rs)) — a multi-threaded Rust tool that brute-forces a salt so the resulting deploy address matches a pattern you choose.
+2. **The miner** — a multi-threaded Rust tool that brute-forces a salt so the resulting deploy address matches a pattern you choose. It ships as two binaries that share all logic ([src/lib.rs](src/lib.rs)):
+   - `create3-miner` ([src/main.rs](src/main.rs)) — portable scalar miner, runs everywhere.
+   - `create3-miner-neon` ([src/bin/create3-miner-neon.rs](src/bin/create3-miner-neon.rs)) — ARM NEON (aarch64) build that hashes two salts per keccak permutation; roughly **1.8× faster** on Apple Silicon. This is the default binary for `cargo run`.
 
 ## The deployer
 
@@ -39,6 +41,20 @@ Once the factory is deployed, the miner brute-forces a CREATE3 salt so the deplo
 cargo run --release -- <factory address> <pattern>
 cargo run --release -- <factory address> --leading <hex prefix>
 ```
+
+### Which binary runs
+
+`cargo run` defaults to the faster NEON binary (`default-run` in [`Cargo.toml`](Cargo.toml)). On Apple Silicon / aarch64 you get the 2-wide NEON miner automatically. To pick a binary explicitly:
+
+```bash
+# NEON miner (aarch64 only; the default)
+cargo run --release --bin create3-miner-neon -- <factory> --leading <hex>
+
+# Portable scalar miner (works on any CPU)
+cargo run --release --bin create3-miner -- <factory> --leading <hex>
+```
+
+On non-aarch64 platforms `create3-miner-neon` compiles to a stub that exits with a message telling you to use `create3-miner` instead, so the whole workspace still builds everywhere. Both binaries accept identical flags.
 
 The repo ships a [`.cargo/config.toml`](.cargo/config.toml) that builds with `-C target-cpu=native`, so release builds automatically use chip-specific instructions (e.g. NEON on Apple Silicon) for extra throughput. No environment variables are needed; a plain `cargo build --release` or `cargo run --release` picks it up. The resulting binary is tuned for the build machine and is not portable to other CPUs.
 
@@ -81,6 +97,23 @@ By default the miner uses all available cores. On hybrid CPUs (for example Apple
 cargo run --release -- 0x9fBB3DF7C40Da2e5A0dE984fFE2CCB7C47cd0ABf --leading 000000000 --threads 12
 ```
 
+### Custom proxy bytecode
+
+By default the miner uses the standard CREATE3 proxy code hash (`keccak256(0x68363d3d37363d34f0ff3d5260096017f3)`). If your factory deploys a different proxy, override it with one of two mutually exclusive flags (both accept hex with or without a `0x` prefix):
+
+- `-B` / `--bytecode-hash` — provide the 32-byte proxy code hash directly.
+- `-b` / `--bytecode` — provide the raw proxy bytecode; the miner hashes it for you.
+
+```bash
+# Provide the proxy code hash directly
+cargo run --release -- <factory> --leading dead -B 0x8d04f296f449a1e795ad35f27e6b1d09af5a2422fa137f3d6cbf52d7a920975c
+
+# Or provide the raw proxy bytecode and let the miner hash it
+cargo run --release -- <factory> --leading dead -b 0x68363d3d37363d34f0ff3d5260096017f3
+```
+
+When a non-default code hash is used it is echoed in the startup header so you can confirm it.
+
 Example output:
 
 ```text
@@ -112,7 +145,7 @@ The contract will land on the printed address regardless of its creation code.
 
 ## Performance
 
-By default the miner uses all CPU cores (override with `--threads`); each worker starts from a random salt and increments sequentially, reusing preallocated hash buffers (two keccak256 per attempt). Expect on the order of 1 MH/s per core. Every additional constrained hex character multiplies the expected search time by 16:
+By default the miner uses all CPU cores (override with `--threads`); each worker starts from a random salt and increments sequentially, reusing preallocated hash buffers (two keccak256 per attempt). The NEON binary hashes two salts per keccak permutation by packing each state into 128-bit lanes (2 × `u64`), using `vsri`-based constant rotations so its per-lane cost matches a scalar `ror` — about 1.8× the scalar throughput on Apple Silicon. Every additional constrained hex character multiplies the expected search time by 16:
 
 | Constrained chars | Expected attempts |
 | ----------------- | ----------------- |
@@ -132,4 +165,4 @@ cargo test --release
 forge test
 ```
 
-The Rust suite includes a derivation vector cross-checked against foundry's `cast create2` / `cast keccak`, and the Foundry suite cross-checks `addressOf` against the miner's derivation.
+The Rust suite includes a derivation vector cross-checked against foundry's `cast create2` / `cast keccak`, NEON-vs-scalar equivalence tests for the batched keccak and address derivation, and the Foundry suite cross-checks `addressOf` against the miner's derivation.

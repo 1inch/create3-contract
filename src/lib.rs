@@ -8,12 +8,12 @@ use regex::Regex;
 use sha3::{Digest, Keccak256};
 
 /// keccak256 of the default CREATE3 proxy child bytecode
-/// `0x68363d3d37363d34f0ff3d5260096017f3`. Used unless overridden via the
-/// `-b`/`-B` flags.
+/// `0x67363d3d37363d34f03d5260086018f3` (Solady/solmate variant). Used unless
+/// overridden via the `-b`/`-B` flags.
 pub const DEFAULT_PROXY_CODE_HASH: [u8; 32] = [
-    0x8d, 0x04, 0xf2, 0x96, 0xf4, 0x49, 0xa1, 0xe7, 0x95, 0xad, 0x35, 0xf2, 0x7e, 0x6b, 0x1d,
-    0x09, 0xaf, 0x5a, 0x24, 0x22, 0xfa, 0x13, 0x7f, 0x3d, 0x6c, 0xbf, 0x52, 0xd7, 0xa9, 0x20,
-    0x97, 0x5c,
+    0x21, 0xc3, 0x5d, 0xbe, 0x1b, 0x34, 0x4a, 0x24, 0x88, 0xcf, 0x33, 0x21, 0xd6, 0xce, 0x54,
+    0x2f, 0x8e, 0x9f, 0x30, 0x55, 0x44, 0xff, 0x09, 0xe4, 0x99, 0x3a, 0x62, 0x31, 0x9a, 0x49,
+    0x7c, 0x1f,
 ];
 
 /// Computes Ethereum keccak256 (the original `0x01`-padded Keccak, not NIST
@@ -497,19 +497,19 @@ mod tests {
 
     #[test]
     fn proxy_code_hash_matches_bytecode() {
-        let proxy_bytecode = hex::decode("68363d3d37363d34f0ff3d5260096017f3").unwrap();
+        let proxy_bytecode = hex::decode("67363d3d37363d34f03d5260086018f3").unwrap();
         assert_eq!(keccak256(&proxy_bytecode), DEFAULT_PROXY_CODE_HASH);
     }
 
     /// Vector computed independently with foundry:
     ///   cast create2 --deployer 0x9fBB...0ABf --salt 0x00..00 \
-    ///     --init-code-hash 0x8d04f296... => proxy 0xA68F3B2839b031e7624C3F3a9e1Fc6843810c236
-    ///   cast keccak 0xd694a68f3b2839b031e7624c3f3a9e1fc6843810c23601 => 0x7f35ba6cce28fdd976c66589f2e109a6fb69ad27
+    ///     --init-code-hash 0x21c35dbe... => proxy 0x932A2198eC22043b9702a6250C8Ad906a3D62131
+    ///   cast keccak 0xd694932a2198ec22043b9702a6250c8ad906a3d6213101 => 0x6c8ed9dc3734d7944beddd2fb5acdf5f17247870
     #[test]
     fn create3_address_known_vector() {
         let factory = parse_address("0x9fBB3DF7C40Da2e5A0dE984fFE2CCB7C47cd0ABf").unwrap();
         let salt = [0u8; 32];
-        let expected = parse_address("0x7f35ba6cce28fdd976c66589f2e109a6fb69ad27").unwrap();
+        let expected = parse_address("0x6c8ed9dc3734d7944beddd2fb5acdf5f17247870").unwrap();
         assert_eq!(create3_address(&factory, &salt, &DEFAULT_PROXY_CODE_HASH), expected);
     }
 
@@ -597,11 +597,11 @@ mod tests {
     fn parse_bytecode_hashes_proxy_to_default() {
         // The real proxy bytecode hashes to the default code hash, with or without 0x.
         assert_eq!(
-            parse_bytecode("68363d3d37363d34f0ff3d5260096017f3").unwrap(),
+            parse_bytecode("67363d3d37363d34f03d5260086018f3").unwrap(),
             DEFAULT_PROXY_CODE_HASH
         );
         assert_eq!(
-            parse_bytecode("0x68363d3d37363d34f0ff3d5260096017f3").unwrap(),
+            parse_bytecode("0x67363d3d37363d34f03d5260086018f3").unwrap(),
             DEFAULT_PROXY_CODE_HASH
         );
     }

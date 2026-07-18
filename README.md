@@ -15,7 +15,7 @@ The factory lives in [contracts/](contracts/): the [`Create3` library](contracts
 
 Because it uses the raw `Create3` derivation (raw salt, no `msg.sender` namespacing), the deployed address depends only on the factory address and the salt — not on the contract being deployed. That property is what makes vanity mining possible: find a salt once, and any contract deployed with it lands on the same predictable address.
 
-Proxy init code: `0x68363d3d37363d34f0ff3d5260096017f3`. The address derivation is:
+Proxy init code: `0x67363d3d37363d34f03d5260086018f3` (the canonical Solady/solmate variant, no `SELFDESTRUCT`, so it also works on zkSync's EVM interpreter). The address derivation is:
 
 ```text
 proxy   = keccak256(0xff ++ factory ++ salt ++ keccak256(proxyBytecode))[12:]
@@ -104,17 +104,17 @@ cargo run --release -- 0x9fBB3DF7C40Da2e5A0dE984fFE2CCB7C47cd0ABf --leading 0000
 
 ### Custom proxy bytecode
 
-By default the miner uses the standard CREATE3 proxy code hash (`keccak256(0x68363d3d37363d34f0ff3d5260096017f3)`). If your factory deploys a different proxy, override it with one of two mutually exclusive flags (both accept hex with or without a `0x` prefix):
+By default the miner uses the standard CREATE3 proxy code hash (`keccak256(0x67363d3d37363d34f03d5260086018f3)`). If your factory deploys a different proxy, override it with one of two mutually exclusive flags (both accept hex with or without a `0x` prefix):
 
 - `-B` / `--bytecode-hash` — provide the 32-byte proxy code hash directly.
 - `-b` / `--bytecode` — provide the raw proxy bytecode; the miner hashes it for you.
 
 ```bash
 # Provide the proxy code hash directly
-cargo run --release -- <factory> --leading dead -B 0x8d04f296f449a1e795ad35f27e6b1d09af5a2422fa137f3d6cbf52d7a920975c
+cargo run --release -- <factory> --leading dead -B 0x21c35dbe1b344a2488cf3321d6ce542f8e9f305544ff09e4993a62319a497c1f
 
 # Or provide the raw proxy bytecode and let the miner hash it
-cargo run --release -- <factory> --leading dead -b 0x68363d3d37363d34f0ff3d5260096017f3
+cargo run --release -- <factory> --leading dead -b 0x67363d3d37363d34f03d5260086018f3
 ```
 
 When a non-default code hash is used it is echoed in the startup header so you can confirm it.

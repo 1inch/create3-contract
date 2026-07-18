@@ -14,28 +14,31 @@ library Create3 {
     @notice The bytecode for a contract that proxies the creation of another contract
     @dev If this code is deployed using CREATE2 it can be used to decouple `creationCode` from the child contract address
 
-  0x68363d3d37363d34f0ff3d5260096017f3:
-      0x00  0x68  0x68XXXXXXXXXXXXXXXXXX  PUSH9 bytecode  0x363d3d37363d34f0ff
-      0x0a  0x3d  0x3d                    RETURNDATASIZE  0 0x363d3d37363d34f0ff
-      0x0b  0x52  0x52                    MSTORE
-      0x0c  0x60  0x6009                  PUSH1 09        9
-      0x0e  0x60  0x6017                  PUSH1 17        23 9
-      0x10  0xf3  0xf3                    RETURN
+  0x67363d3d37363d34f03d5260086018f3:
+      0x00  0x67  0x67XXXXXXXXXXXXXXXX  PUSH8 bytecode  0x363d3d37363d34f0
+      0x09  0x3d  0x3d                  RETURNDATASIZE  0 0x363d3d37363d34f0
+      0x0a  0x52  0x52                  MSTORE
+      0x0b  0x60  0x6008                PUSH1 08        8
+      0x0d  0x60  0x6018                PUSH1 18        24 8
+      0x0f  0xf3  0xf3                  RETURN
 
-  0x363d3d37363d34f0ff:
-      0x00  0x36  0x36                    CALLDATASIZE    cds
-      0x01  0x3d  0x3d                    RETURNDATASIZE  0 cds
-      0x02  0x3d  0x3d                    RETURNDATASIZE  0 0 cds
-      0x03  0x37  0x37                    CALLDATACOPY
-      0x04  0x36  0x36                    CALLDATASIZE    cds
-      0x05  0x3d  0x3d                    RETURNDATASIZE  0 cds
-      0x06  0x34  0x34                    CALLVALUE       val 0 cds
-      0x07  0xf0  0xf0                    CREATE          addr
-      0x08  0xff  0xff                    SELFDESTRUCT
+  0x363d3d37363d34f0:
+      0x00  0x36  0x36                  CALLDATASIZE    cds
+      0x01  0x3d  0x3d                  RETURNDATASIZE  0 cds
+      0x02  0x3d  0x3d                  RETURNDATASIZE  0 0 cds
+      0x03  0x37  0x37                  CALLDATACOPY
+      0x04  0x36  0x36                  CALLDATASIZE    cds
+      0x05  0x3d  0x3d                  RETURNDATASIZE  0 cds
+      0x06  0x34  0x34                  CALLVALUE       val 0 cds
+      0x07  0xf0  0xf0                  CREATE          addr
+
+  No SELFDESTRUCT: execution falls off the end into an implicit STOP, leaving
+  the proxy in place. This is the Solady/solmate-compatible variant, chosen
+  because zkSync's EVM interpreter does not support SELFDESTRUCT.
   */
 
-  bytes private constant _PROXY_CHILD_BYTECODE = hex"68_36_3d_3d_37_36_3d_34_f0_ff_3d_52_60_09_60_17_f3";
-  bytes32 private constant _KECCAK256_PROXY_CHILD_BYTECODE = keccak256(_PROXY_CHILD_BYTECODE); // 0x8d04f296f449a1e795ad35f27e6b1d09af5a2422fa137f3d6cbf52d7a920975c
+  bytes private constant _PROXY_CHILD_BYTECODE = hex"67_36_3d_3d_37_36_3d_34_f0_3d_52_60_08_60_18_f3";
+  bytes32 private constant _KECCAK256_PROXY_CHILD_BYTECODE = keccak256(_PROXY_CHILD_BYTECODE); // 0x21c35dbe1b344a2488cf3321d6ce542f8e9f305544ff09e4993a62319a497c1f
 
   /**
     @notice Creates a new contract with given `_creationCode` and `_salt`

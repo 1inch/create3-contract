@@ -43,18 +43,18 @@ Putting it together: the proxy address depends on `(factory, salt)`, the contrac
 
 ### The proxy bytecode, opcode by opcode
 
-The proxy init code is 17 bytes: `0x68363d3d37363d34f0ff3d5260096017f3`. It simply puts 9 bytes of runtime code into memory and returns them:
+The proxy init code is 16 bytes: `0x67363d3d37363d34f03d5260086018f3`. It simply puts 8 bytes of runtime code into memory and returns them:
 
 ```text
-0x00  68 363d3d37363d34f0ff  PUSH9  runtime code
-0x0a  3d                     RETURNDATASIZE  (cheap way to get 0)
-0x0b  52                     MSTORE          (store the code in memory)
-0x0c  6009                   PUSH1 9         (code length)
-0x0e  6017                   PUSH1 23        (memory offset)
-0x10  f3                     RETURN
+0x00  67 363d3d37363d34f0  PUSH8  runtime code
+0x09  3d                   RETURNDATASIZE  (cheap way to get 0)
+0x0a  52                   MSTORE          (store the code in memory)
+0x0b  6008                 PUSH1 8         (code length)
+0x0d  6018                 PUSH1 24        (memory offset)
+0x0f  f3                   RETURN
 ```
 
-The proxy runtime code is 9 bytes: `0x363d3d37363d34f0ff`. It copies calldata (your contract's init code) and performs CREATE:
+The proxy runtime code is 8 bytes: `0x363d3d37363d34f0`. It copies calldata (your contract's init code) and performs CREATE:
 
 ```text
 0x00  36  CALLDATASIZE   calldata size
@@ -65,10 +65,9 @@ The proxy runtime code is 9 bytes: `0x363d3d37363d34f0ff`. It copies calldata (y
 0x05  3d  RETURNDATASIZE 0
 0x06  34  CALLVALUE      forward ETH, if any
 0x07  f0  CREATE         deploy your contract
-0x08  ff  SELFDESTRUCT   the proxy destroys itself
 ```
 
-The final `ff` byte is specific to our version: the proxy destroys itself right after the deployment since it will never be needed again. The canonical variant (solmate/0xSequence/CreateX) is 16 bytes without `SELFDESTRUCT`. Because of this difference our proxy code hash is different, and the miner is configured for it by default.
+This is the canonical proxy variant (Solady/solmate/0xSequence/CreateX). After `CREATE` execution simply falls off the end into an implicit STOP; the proxy is not needed again, but it stays on chain. Earlier versions of this repository appended a `SELFDESTRUCT` byte, but that opcode is not supported by zkSync's EVM interpreter (EraVM never implemented it), so we switched to the canonical bytecode — which also makes our proxy code hash match the ecosystem standard.
 
 ## The address formula
 
@@ -88,8 +87,8 @@ Notation:
 - `bytecode_hash` — `keccak256(proxy init code)`, a constant:
 
 ```text
-init code:     0x68363d3d37363d34f0ff3d5260096017f3
-bytecode_hash: 0x8d04f296f449a1e795ad35f27e6b1d09af5a2422fa137f3d6cbf52d7a920975c
+init code:     0x67363d3d37363d34f03d5260086018f3
+bytecode_hash: 0x21c35dbe1b344a2488cf3321d6ce542f8e9f305544ff09e4993a62319a497c1f
 ```
 
 The first line is the standard CREATE2 formula ([EIP-1014](https://eips.ethereum.org/EIPS/eip-1014)). The second is the standard CREATE formula: the RLP encoding of the pair `[proxy, nonce]`, where `0xd6` means "a list of 22 bytes", `0x94` means "a string of 20 bytes" (the proxy address), and `0x01` is the proxy's nonce, which is always 1.
@@ -118,8 +117,8 @@ Comparing the two approaches:
 | Salt | hashed together with `msg.sender` (guarded) | raw, as is |
 | Tied to a wallet | yes | no — ownership can be transferred |
 | Front-run protection | mixing the sender into the salt | `onlyOwner` + address depends on the factory |
-| Proxy init code | `0x67363d3d37363d34f03d5260086018f3` | `0x68363d3d37363d34f0ff3d5260096017f3` |
-| bytecode_hash | `0x21c35dbe1b344a2488cf3321d6ce542f8e9f305544ff09e4993a62319a497c1f` | `0x8d04f296f449a1e795ad35f27e6b1d09af5a2422fa137f3d6cbf52d7a920975c` |
+| Proxy init code | `0x67363d3d37363d34f03d5260086018f3` | `0x67363d3d37363d34f03d5260086018f3` (same) |
+| bytecode_hash | `0x21c35dbe1b344a2488cf3321d6ce542f8e9f305544ff09e4993a62319a497c1f` | `0x21c35dbe1b344a2488cf3321d6ce542f8e9f305544ff09e4993a62319a497c1f` (same) |
 
 We deliberately chose the raw salt: any wallet that receives ownership can deploy, and mined salts survive a change of deployer.
 
@@ -155,7 +154,7 @@ These are the means of a geometric distribution: with ~63% probability the salt 
 
 If an external party does the mining, they need exactly three parameters:
 
-1. the proxy init code or its hash: `0x8d04f296f449a1e795ad35f27e6b1d09af5a2422fa137f3d6cbf52d7a920975c`;
+1. the proxy init code or its hash: `0x21c35dbe1b344a2488cf3321d6ce542f8e9f305544ff09e4993a62319a497c1f`;
 2. the factory address;
 3. the fact that the salt is raw (no `hash(caller, salt)` as in CreateX).
 
@@ -187,8 +186,8 @@ The transaction reverts with `TargetAlreadyExists` — the address already has c
 **Do constructor arguments affect the address?**
 No. The init code (constructor arguments included) is handed to the proxy after the address is already determined. Both code and arguments can change right up until deployment.
 
-**Why does the proxy self-destruct (`SELFDESTRUCT`)?**
-The proxy is needed for exactly one operation — it is useless after the deployment, so our bytecode variant destroys it immediately. This does not affect the final contract address.
+**What happens to the proxy after the deployment?**
+Nothing — it stays on chain with its 8 bytes of runtime code. It is harmless: calling it again could only `CREATE` from a nonce above 1, which never collides with any CREATE3 address. Earlier versions of this repository self-destructed the proxy, but `SELFDESTRUCT` is unsupported on zkSync's EVM interpreter (and deprecated on Ethereum since Cancun), so the canonical bytecode is used instead.
 
 **Are our salts compatible with CreateX?**
-No. CreateX has a different factory address, a different proxy code hash, and it hashes the salt together with the sender before use. All three inputs of the formula differ — salts and addresses do not transfer in either direction.
+No. Although the proxy code hash is now the same, CreateX has a different factory address and it hashes the salt together with the sender before use. Two of the three inputs of the formula differ — salts and addresses do not transfer in either direction.

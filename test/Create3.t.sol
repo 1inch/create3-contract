@@ -17,10 +17,10 @@ contract Create3Test is Test {
 
     /// Guards the hash comment in contracts/libraries/Create3.sol
     function test_proxyBytecodeHash() external pure {
-        bytes memory proxyBytecode = hex"68363d3d37363d34f0ff3d5260096017f3";
+        bytes memory proxyBytecode = hex"67363d3d37363d34f03d5260086018f3";
         assertEq(
             keccak256(proxyBytecode),
-            0x8d04f296f449a1e795ad35f27e6b1d09af5a2422fa137f3d6cbf52d7a920975c
+            0x21c35dbe1b344a2488cf3321d6ce542f8e9f305544ff09e4993a62319a497c1f
         );
     }
 
@@ -30,14 +30,14 @@ contract Create3Test is Test {
 
     /// Cross-checked with the Rust miner unit test (create3_address_known_vector):
     /// factory 0x9fBB3DF7C40Da2e5A0dE984fFE2CCB7C47cd0ABf + zero salt
-    /// => 0x7f35ba6cce28fdd976c66589f2e109a6fb69ad27
+    /// => 0x6c8ed9dc3734d7944beddd2fb5acdf5f17247870
     function test_addressOf_zeroSalt() external {
         Create3Deployer fixedDeployer = new Create3Deployer();
         vm.etch(0x9fBB3DF7C40Da2e5A0dE984fFE2CCB7C47cd0ABf, address(fixedDeployer).code);
         Create3Deployer fixed_ = Create3Deployer(0x9fBB3DF7C40Da2e5A0dE984fFE2CCB7C47cd0ABf);
         assertEq(
             fixed_.addressOf(bytes32(0)),
-            0x7F35BA6cCe28FdD976c66589F2E109A6fB69aD27
+            0x6c8Ed9dC3734d7944BEDDd2fB5AcdF5f17247870
         );
     }
 

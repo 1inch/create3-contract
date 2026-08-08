@@ -198,7 +198,13 @@ Expected attempts per constrained-character count:
 
 A progress line with the total attempt count and hash rate is printed to stderr every 5 seconds.
 
-### GPU keccak benchmark
+### GPU benchmarks
+
+[bench/metal-kernel-ab](bench/metal-kernel-ab/) times the miner's kernel per dispatch and A/Bs two kernel sources by alternating between them, which is the only way to resolve a change of a few percent on a machine whose sustained rate swings by a third as it heats up:
+
+```bash
+cargo run --release --bin metal-kernel-ab -- baseline.metal candidate.metal
+```
 
 [bench/metal-keccak](bench/metal-keccak/) is a standalone Metal microbenchmark measuring raw keccak-f[1600] throughput on the Apple GPU. It was used to size up the Metal port before writing it: on an M4 Max (40-core GPU) the bit-interleaved kernel sustains ~1.05 G permutations/s (~523 MH/s miner-equivalent), and the finished `create3-miner-metal` reaches ~495 MH/s — within ~5% of that ceiling once the two-stage CREATE3 derivation and matching are added.
 

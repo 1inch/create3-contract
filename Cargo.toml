@@ -20,6 +20,10 @@ path = "src/bin/create3-miner-neon.rs"
 name = "create3-miner-metal"
 path = "src/bin/create3-miner-metal/main.rs"
 
+[[bin]]
+name = "metal-kernel-ab"
+path = "bench/metal-kernel-ab/main.rs"
+
 [profile.release]
 lto = true
 codegen-units = 1

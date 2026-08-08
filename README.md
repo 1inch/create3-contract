@@ -170,6 +170,10 @@ Expected attempts per constrained-character count:
 
 A progress line with the total attempt count and hash rate is printed to stderr every 5 seconds.
 
+### GPU feasibility
+
+[bench/metal-keccak](bench/metal-keccak/) is a standalone Metal microbenchmark measuring raw keccak-f[1600] throughput on the Apple GPU, used to size up a potential Metal port of the miner. On an M4 Max (40-core GPU) the bit-interleaved kernel sustains ~1.05 G permutations/s (~523 MH/s miner-equivalent) versus ~101 MH/s for this NEON miner on all 16 CPU cores — roughly 5x headroom.
+
 ## Tests
 
 ```bash

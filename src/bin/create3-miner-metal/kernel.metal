@@ -16,7 +16,9 @@
 // interleaved, with the counter bytes zeroed) plus plain words 5/6 for the
 // counter splice, and the match pattern/mask over final-state words 1..3 in
 // interleaved form (an equality-under-mask test survives any fixed bit
-// permutation, so no deinterleave is needed to check a candidate).
+// permutation, so no deinterleave is needed to check a candidate). Nothing in
+// the per-candidate path leaves the interleaved domain: the stage-2 input is
+// spliced from the stage-1 digest words in place (stage2_word0..2).
 //
 // `mine` reports matching counters through an atomic hit buffer; the host
 // re-derives and verifies every candidate on the CPU before accepting it.
@@ -185,6 +187,45 @@ static inline ulong deinterleave64(uint2 v)
 }
 
 // ---------------------------------------------------------------------------
+// Stage-2 input assembly, in the interleaved domain
+// ---------------------------------------------------------------------------
+
+// Interleaved constants of the stage-2 frame: the leading `0xd6 0x94` RLP
+// header, and the `0x01` nonce plus `0x01` sponge terminator at input bytes
+// 22..23. These are il(0x94d6) and il(0x0101 << 48).
+constant uint2 S2_HEAD = uint2(0x0000006eu, 0x00000089u);
+constant uint2 S2_TAIL = uint2(0x11000000u, 0x00000000u);
+
+// The three nonzero rate words of stage 2 (`0xd6 0x94 ++ proxy[20] ++ 0x01`,
+// padded), built straight from the interleaved stage-1 digest words h1..h3 -
+// the proxy address is hash bytes 12..31, i.e. the high half of word 1 plus
+// words 2 and 3. In the plain 64-bit domain (stage2_words() in the NEON miner):
+//
+//   s0 = 0x94d6 | ((h1 >> 32) << 16) | ((h2 & 0xffff) << 48)
+//   s1 = (h2 >> 16) | ((h3 & 0xffff) << 48)
+//   s2 = (h3 >> 16) | (0x0101 << 48)
+//
+// Every shift here is by an even number of bits, and a shift by 2k is a shift
+// by k of both interleaved halves, so the whole splice maps over without
+// leaving the interleaved domain. The `& 0xffff` masks drop out: the following
+// `<< 48` discards everything above bit 15 anyway.
+static inline uint2 stage2_word0(uint2 h1, uint2 h2)
+{
+    return uint2(S2_HEAD.x | ((h1.x >> 16) << 8) | (h2.x << 24),
+                 S2_HEAD.y | ((h1.y >> 16) << 8) | (h2.y << 24));
+}
+
+static inline uint2 stage2_word1(uint2 h2, uint2 h3)
+{
+    return uint2((h2.x >> 8) | (h3.x << 24), (h2.y >> 8) | (h3.y << 24));
+}
+
+static inline uint2 stage2_word2(uint2 h3)
+{
+    return uint2((h3.x >> 8) | S2_TAIL.x, (h3.y >> 8) | S2_TAIL.y);
+}
+
+// ---------------------------------------------------------------------------
 // Mining kernels
 // ---------------------------------------------------------------------------
 
@@ -246,17 +287,14 @@ struct HitBuffer {
     uint2 a23 = uint2(0u);                                              \
     uint2 a24 = uint2(0u);                                              \
     KECCAKF_IL();                                                       \
-    /* proxy address = hash bytes 12..31 = hi(word1) ++ word2 ++ word3 */ \
-    ulong h1 = deinterleave64(a1);                                      \
-    ulong h2 = deinterleave64(a2);                                      \
-    ulong h3 = deinterleave64(a3);                                      \
-    /* stage 2: 0xd6 0x94 ++ proxy[20] ++ 0x01, padded (stage2_words()) */ \
-    ulong s0 = 0x94d6ul | ((h1 >> 32) << 16) | ((h2 & 0xfffful) << 48); \
-    ulong s1 = (h2 >> 16) | ((h3 & 0xfffful) << 48);                    \
-    ulong s2 = (h3 >> 16) | (0x0101ul << 48);                           \
-    a0 = interleave64(s0);                                              \
-    a1 = interleave64(s1);                                              \
-    a2 = interleave64(s2);                                              \
+    /* stage 2 (see stage2_word0..2): assembled from the stage-1 digest    */ \
+    /* words without a round trip through the plain 64-bit domain.         */ \
+    uint2 s0 = stage2_word0(a1, a2);                                    \
+    uint2 s1 = stage2_word1(a2, a3);                                    \
+    uint2 s2 = stage2_word2(a3);                                        \
+    a0 = s0;                                                            \
+    a1 = s1;                                                            \
+    a2 = s2;                                                            \
     a3 = uint2(0u);                                                     \
     a4 = uint2(0u);                                                     \
     a5 = uint2(0u);                                                     \

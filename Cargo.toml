@@ -16,6 +16,10 @@ path = "src/main.rs"
 name = "create3-miner-neon"
 path = "src/bin/create3-miner-neon.rs"
 
+[[bin]]
+name = "create3-miner-metal"
+path = "src/bin/create3-miner-metal/main.rs"
+
 [profile.release]
 lto = true
 codegen-units = 1
@@ -26,3 +30,10 @@ hex = "0.4.3"
 rand = "0.10.1"
 regex = "1.12.4"
 sha3 = "0.10"
+
+# Metal GPU miner (create3-miner-metal); only pulled in on macOS. On other
+# platforms the binary compiles to a stub, so no Metal bindings are needed.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.2"
+objc2-foundation = "0.3.2"
+objc2-metal = "0.3.2"

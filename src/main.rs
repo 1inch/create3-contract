@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use create3_miner::{
-    hex_encode_addr, leading_match, parse_cli, run_search, MatchMode, MiningContext,
+    hex_encode_addr, mask_match, parse_cli, run_search, MatchMode, MiningContext,
 };
 
 fn main() {
@@ -21,7 +21,7 @@ fn main() {
                 local += 1;
 
                 let matched = match &mode {
-                    MatchMode::Leading(nibbles) => leading_match(&addr, nibbles),
+                    MatchMode::Mask { value, mask } => mask_match(&addr, value, mask),
                     MatchMode::Regex(re) => {
                         hex_encode_addr(&addr, &mut ctx.hex_buf);
                         // hex_buf is always valid ASCII

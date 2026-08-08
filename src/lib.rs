@@ -129,22 +129,25 @@ pub fn hex_encode_addr(addr: &[u8; 20], out: &mut [u8; 40]) {
 /// How a candidate address is tested for a match.
 #[derive(Clone)]
 pub enum MatchMode {
-    /// Exact hex prefix as a list of nibbles (0..=15). Compared directly on the
-    /// address bytes, skipping hex encoding and the regex engine.
-    Leading(Vec<u8>),
+    /// Fixed-nibble pattern compared directly on the address bytes: matches
+    /// iff `(addr[i] ^ value[i]) & mask[i] == 0` for every byte. Built from
+    /// any combination of `--leading`, `--suffix` and `--mask`; skips hex
+    /// encoding and the regex engine.
+    Mask { value: [u8; 20], mask: [u8; 20] },
     /// Arbitrary case-insensitive regex over the lowercase hex address.
     Regex(Regex),
 }
 
-/// Parses a hex prefix (optionally `0x`-prefixed) into a list of nibbles.
-pub fn parse_leading(s: &str) -> Result<Vec<u8>, String> {
+/// Parses a hex nibble string (optionally `0x`-prefixed) into a list of
+/// nibble values (0..=15).
+pub fn parse_hex_nibbles(s: &str) -> Result<Vec<u8>, String> {
     let stripped = strip_hex_prefix(s);
     if stripped.is_empty() {
-        return Err("leading pattern must not be empty".to_string());
+        return Err("hex pattern must not be empty".to_string());
     }
     if stripped.len() > 40 {
         return Err(format!(
-            "leading pattern too long: {} hex chars (max 40)",
+            "hex pattern too long: {} hex chars (max 40)",
             stripped.len()
         ));
     }
@@ -152,23 +155,125 @@ pub fn parse_leading(s: &str) -> Result<Vec<u8>, String> {
     for c in stripped.chars() {
         match c.to_digit(16) {
             Some(d) => nibbles.push(d as u8),
-            None => return Err(format!("invalid hex character '{c}' in leading pattern")),
+            None => return Err(format!("invalid hex character '{c}' in pattern")),
         }
     }
     Ok(nibbles)
 }
 
-/// Returns true if the address starts with the given nibble prefix.
+/// Parses a hex prefix (optionally `0x`-prefixed) into a list of nibbles.
+pub fn parse_leading(s: &str) -> Result<Vec<u8>, String> {
+    parse_hex_nibbles(s)
+}
+
+/// Returns true if the address matches the fixed-nibble pattern (see
+/// [`MatchMode::Mask`]).
 #[inline(always)]
-pub fn leading_match(addr: &[u8; 20], nibbles: &[u8]) -> bool {
-    for (i, &want) in nibbles.iter().enumerate() {
-        let byte = addr[i / 2];
-        let got = if i % 2 == 0 { byte >> 4 } else { byte & 0x0f };
-        if got != want {
+pub fn mask_match(addr: &[u8; 20], value: &[u8; 20], mask: &[u8; 20]) -> bool {
+    for i in 0..20 {
+        if (addr[i] ^ value[i]) & mask[i] != 0 {
             return false;
         }
     }
     true
+}
+
+/// Accumulates fixed nibbles from `--leading` / `--suffix` / `--mask` into a
+/// single (value, mask) pair over the 20-byte address. Nibble position 0 is
+/// the first hex character of the address; a mask half-byte is 0xF where the
+/// nibble is constrained.
+#[derive(Default, Clone)]
+pub struct AddressPattern {
+    pub value: [u8; 20],
+    pub mask: [u8; 20],
+}
+
+impl AddressPattern {
+    fn set_nibble(&mut self, pos: usize, nibble: u8) -> Result<(), String> {
+        debug_assert!(pos < 40 && nibble <= 0xf);
+        let byte = pos / 2;
+        let shift = if pos % 2 == 0 { 4 } else { 0 };
+        if (self.mask[byte] >> shift) & 0x0f != 0 && (self.value[byte] >> shift) & 0x0f != nibble
+        {
+            return Err(format!(
+                "conflicting constraints at address hex position {pos}"
+            ));
+        }
+        self.mask[byte] |= 0x0f << shift;
+        self.value[byte] |= nibble << shift;
+        Ok(())
+    }
+
+    /// Constrains the first `nibbles.len()` hex chars of the address.
+    pub fn add_leading(&mut self, nibbles: &[u8]) -> Result<(), String> {
+        for (i, &n) in nibbles.iter().enumerate() {
+            self.set_nibble(i, n)?;
+        }
+        Ok(())
+    }
+
+    /// Constrains the last `nibbles.len()` hex chars of the address.
+    pub fn add_suffix(&mut self, nibbles: &[u8]) -> Result<(), String> {
+        for (i, &n) in nibbles.iter().enumerate() {
+            self.set_nibble(40 - nibbles.len() + i, n)?;
+        }
+        Ok(())
+    }
+
+    /// Applies a left-anchored template of hex chars and `.` wildcards over
+    /// the 40-char hex address, e.g. `dead....beef`.
+    pub fn add_template(&mut self, template: &str) -> Result<(), String> {
+        if template.is_empty() {
+            return Err("mask template must not be empty".to_string());
+        }
+        if template.len() > 40 {
+            return Err(format!(
+                "mask template too long: {} chars (max 40)",
+                template.len()
+            ));
+        }
+        for (i, c) in template.chars().enumerate() {
+            if c == '.' {
+                continue;
+            }
+            match c.to_digit(16) {
+                Some(d) => self.set_nibble(i, d as u8)?,
+                None => {
+                    return Err(format!(
+                        "invalid character '{c}' in mask template (expected hex or '.')"
+                    ))
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// True if no nibble is constrained.
+    pub fn is_empty(&self) -> bool {
+        self.mask.iter().all(|&b| b == 0)
+    }
+
+    /// Number of constrained nibbles.
+    pub fn fixed_nibbles(&self) -> u32 {
+        self.mask
+            .iter()
+            .map(|&b| u32::from(b >> 4 != 0) + u32::from(b & 0x0f != 0))
+            .sum()
+    }
+
+    /// Canonical 40-char template (hex for fixed nibbles, `.` for free ones).
+    pub fn template_string(&self) -> String {
+        (0..40)
+            .map(|i| {
+                let shift = if i % 2 == 0 { 4 } else { 0 };
+                if (self.mask[i / 2] >> shift) & 0x0f != 0 {
+                    char::from(HEX_CHARS[((self.value[i / 2] >> shift) & 0x0f) as usize])
+                } else {
+                    '.'
+                }
+            })
+            .collect()
+    }
 }
 
 /// Per-worker scalar mining state with preallocated buffers and a single reused
@@ -236,7 +341,12 @@ impl MiningContext {
 /// buffers only add spill traffic. The flag is kept for experimentation.
 pub const DEFAULT_NEON_BUFFERS: usize = 1;
 
-/// Resolved command-line configuration shared by both miners.
+/// Default number of attempts per GPU dispatch for the Metal miner
+/// (~8 ms of work at ~500 MH/s: long enough to amortize dispatch overhead,
+/// short enough to keep progress reporting and the GPU watchdog happy).
+pub const DEFAULT_METAL_BATCH: usize = 1 << 22;
+
+/// Resolved command-line configuration shared by all miners.
 pub struct Config {
     pub factory: [u8; 20],
     pub mode: MatchMode,
@@ -247,6 +357,8 @@ pub struct Config {
     pub neon_buffers: usize,
     /// NEON only: force the base NEON path even if the SHA3 extension exists.
     pub force_base_keccak: bool,
+    /// Metal only: attempts per GPU dispatch.
+    pub batch: usize,
 }
 
 /// Builds the CLI, parses args, and resolves them into a [`Config`].
@@ -259,17 +371,43 @@ pub fn parse_cli(bin_name: &'static str) -> Config {
                 .required(true)
                 .help("CREATE3 factory address (0x...)"),
         )
-        .arg(Arg::new("pattern").help(
-            "Regex matched against the 40-char lowercase hex address (no 0x). \
-             Examples: '^dead' (prefix), 'beef$' (suffix), 'c0ffee' (anywhere), '^0{8}'",
-        ))
+        .arg(
+            Arg::new("pattern")
+                .help(
+                    "Regex matched against the 40-char lowercase hex address (no 0x). \
+                     Examples: '^dead' (prefix), 'beef$' (suffix), 'c0ffee' (anywhere), '^0{8}'. \
+                     CPU miners only; not supported by create3-miner-metal",
+                )
+                .conflicts_with_all(["leading", "suffix", "mask"]),
+        )
         .arg(
             Arg::new("leading")
                 .long("leading")
                 .value_name("HEX")
                 .help(
                     "Fast-path exact hex prefix to match at the start of the address \
-                     (case-insensitive), e.g. '000000000' or 'dead'",
+                     (case-insensitive), e.g. '000000000' or 'dead'. \
+                     Can be combined with --suffix and --mask",
+                ),
+        )
+        .arg(
+            Arg::new("suffix")
+                .long("suffix")
+                .value_name("HEX")
+                .help(
+                    "Fast-path exact hex suffix to match at the end of the address \
+                     (case-insensitive), e.g. 'beef'. \
+                     Can be combined with --leading and --mask",
+                ),
+        )
+        .arg(
+            Arg::new("mask")
+                .long("mask")
+                .value_name("TEMPLATE")
+                .help(
+                    "Fast-path left-anchored template of hex chars and '.' wildcards \
+                     over the 40-char address (case-insensitive), e.g. 'dead....beef'. \
+                     Can be combined with --leading and --suffix",
                 ),
         )
         .arg(
@@ -294,6 +432,12 @@ pub fn parse_cli(bin_name: &'static str) -> Config {
                 .help("NEON only: disable the ARMv8 SHA3 extension path (for benchmarking)"),
         )
         .arg(
+            Arg::new("batch")
+                .long("batch")
+                .value_name("N")
+                .help("Metal only: attempts per GPU dispatch (default 4194304)"),
+        )
+        .arg(
             Arg::new("bytecode")
                 .short('b')
                 .long("bytecode")
@@ -315,8 +459,9 @@ pub fn parse_cli(bin_name: &'static str) -> Config {
         )
         .group(
             ArgGroup::new("matcher")
-                .args(["pattern", "leading"])
-                .required(true),
+                .args(["pattern", "leading", "suffix", "mask"])
+                .required(true)
+                .multiple(true),
         )
         .group(
             ArgGroup::new("proxy")
@@ -333,19 +478,7 @@ pub fn parse_cli(bin_name: &'static str) -> Config {
         }
     };
 
-    let (mode, mode_desc) = if let Some(leading) = matches.get_one::<String>("leading") {
-        match parse_leading(leading) {
-            Ok(nibbles) => {
-                let desc = format!("Leading:  {} ({} hex chars)", leading, nibbles.len());
-                (MatchMode::Leading(nibbles), desc)
-            }
-            Err(e) => {
-                eprintln!("error: invalid leading pattern: {e}");
-                std::process::exit(1);
-            }
-        }
-    } else {
-        let pattern_str = matches.get_one::<String>("pattern").unwrap();
+    let (mode, mode_desc) = if let Some(pattern_str) = matches.get_one::<String>("pattern") {
         match Regex::new(&format!("(?i){pattern_str}")) {
             Ok(r) => (
                 MatchMode::Regex(r),
@@ -356,6 +489,40 @@ pub fn parse_cli(bin_name: &'static str) -> Config {
                 std::process::exit(1);
             }
         }
+    } else {
+        let mut pattern = AddressPattern::default();
+        if let Some(leading) = matches.get_one::<String>("leading") {
+            if let Err(e) = parse_hex_nibbles(leading).and_then(|n| pattern.add_leading(&n)) {
+                eprintln!("error: invalid --leading: {e}");
+                std::process::exit(1);
+            }
+        }
+        if let Some(suffix) = matches.get_one::<String>("suffix") {
+            if let Err(e) = parse_hex_nibbles(suffix).and_then(|n| pattern.add_suffix(&n)) {
+                eprintln!("error: invalid --suffix: {e}");
+                std::process::exit(1);
+            }
+        }
+        if let Some(template) = matches.get_one::<String>("mask") {
+            if let Err(e) = pattern.add_template(template) {
+                eprintln!("error: invalid --mask: {e}");
+                std::process::exit(1);
+            }
+        }
+        // The matcher arg group guarantees at least one flag was given, and
+        // every flag rejects empty input, so at least one nibble is fixed.
+        let desc = format!(
+            "Pattern:  {} ({} fixed nibbles)",
+            pattern.template_string(),
+            pattern.fixed_nibbles()
+        );
+        (
+            MatchMode::Mask {
+                value: pattern.value,
+                mask: pattern.mask,
+            },
+            desc,
+        )
     };
 
     let threads = match matches.get_one::<String>("threads") {
@@ -404,6 +571,17 @@ pub fn parse_cli(bin_name: &'static str) -> Config {
 
     let force_base_keccak = matches.get_flag("no-sha3");
 
+    let batch = match matches.get_one::<String>("batch") {
+        Some(s) => match s.parse::<usize>() {
+            Ok(n) if (1..=(1usize << 26)).contains(&n) => n,
+            _ => {
+                eprintln!("error: --batch must be an integer in 1..=67108864");
+                std::process::exit(1);
+            }
+        },
+        None => DEFAULT_METAL_BATCH,
+    };
+
     Config {
         factory,
         mode,
@@ -412,6 +590,7 @@ pub fn parse_cli(bin_name: &'static str) -> Config {
         code_hash,
         neon_buffers,
         force_base_keccak,
+        batch,
     }
 }
 
@@ -548,34 +727,101 @@ mod tests {
         assert!(parse_leading(&"0".repeat(41)).is_err());
     }
 
-    #[test]
-    fn leading_match_prefixes() {
-        let addr = parse_address("0xdeadbeef00112233445566778899aabbccddeeff").unwrap();
-        assert!(leading_match(&addr, &parse_leading("dead").unwrap()));
-        assert!(leading_match(&addr, &parse_leading("deadbeef").unwrap()));
-        assert!(!leading_match(&addr, &parse_leading("beef").unwrap()));
-        assert!(!leading_match(&addr, &parse_leading("deae").unwrap()));
+    fn leading_pattern(s: &str) -> AddressPattern {
+        let mut p = AddressPattern::default();
+        p.add_leading(&parse_leading(s).unwrap()).unwrap();
+        p
+    }
+
+    fn matches(p: &AddressPattern, addr: &[u8; 20]) -> bool {
+        mask_match(addr, &p.value, &p.mask)
     }
 
     #[test]
-    fn leading_match_nibble_boundary() {
+    fn mask_match_prefixes() {
+        let addr = parse_address("0xdeadbeef00112233445566778899aabbccddeeff").unwrap();
+        assert!(matches(&leading_pattern("dead"), &addr));
+        assert!(matches(&leading_pattern("deadbeef"), &addr));
+        assert!(!matches(&leading_pattern("beef"), &addr));
+        assert!(!matches(&leading_pattern("deae"), &addr));
+    }
+
+    #[test]
+    fn mask_match_nibble_boundary() {
         // Bytes: 00 00 00 00 05 ... so 9 leading zero nibbles, then nibble 9 is 5.
         let addr = parse_address("0x0000000005112233445566778899aabbccddeeff").unwrap();
-        assert!(leading_match(&addr, &parse_leading("000000000").unwrap()));
-        assert!(!leading_match(&addr, &parse_leading("0000000000").unwrap()));
+        assert!(matches(&leading_pattern("000000000"), &addr));
+        assert!(!matches(&leading_pattern("0000000000"), &addr));
     }
 
     #[test]
-    fn leading_match_agrees_with_regex() {
+    fn mask_match_agrees_with_regex() {
         let addr = parse_address("0xdead00000000000000000000000000000000beef").unwrap();
         let mut buf = [0u8; 40];
         hex_encode_addr(&addr, &mut buf);
         let hex_str = std::str::from_utf8(&buf).unwrap();
         let re = Regex::new("(?i)^dead").unwrap();
-        assert_eq!(
-            leading_match(&addr, &parse_leading("dead").unwrap()),
-            re.is_match(hex_str)
-        );
+        assert_eq!(matches(&leading_pattern("dead"), &addr), re.is_match(hex_str));
+    }
+
+    #[test]
+    fn suffix_pattern_matches_end() {
+        let addr = parse_address("0xdead00000000000000000000000000000000beef").unwrap();
+        let mut p = AddressPattern::default();
+        p.add_suffix(&parse_hex_nibbles("beef").unwrap()).unwrap();
+        assert!(matches(&p, &addr));
+
+        // Odd-length suffix lands on the last nibble, not a byte boundary.
+        let mut p = AddressPattern::default();
+        p.add_suffix(&parse_hex_nibbles("f").unwrap()).unwrap();
+        assert!(matches(&p, &addr));
+
+        let mut p = AddressPattern::default();
+        p.add_suffix(&parse_hex_nibbles("beee").unwrap()).unwrap();
+        assert!(!matches(&p, &addr));
+    }
+
+    #[test]
+    fn template_pattern() {
+        let addr = parse_address("0xdead1234beef0000000000000000000000000000").unwrap();
+        let mut p = AddressPattern::default();
+        p.add_template("dead....beef").unwrap();
+        assert!(matches(&p, &addr));
+
+        let mut p = AddressPattern::default();
+        p.add_template("dead....beee").unwrap();
+        assert!(!matches(&p, &addr));
+
+        assert!(AddressPattern::default().add_template("").is_err());
+        assert!(AddressPattern::default().add_template(&"0".repeat(41)).is_err());
+        assert!(AddressPattern::default().add_template("de.z").is_err());
+    }
+
+    #[test]
+    fn combined_flags_and_conflicts() {
+        // leading + suffix + overlapping-but-consistent template combine fine.
+        let addr = parse_address("0xdead00000000000000000000000000000000beef").unwrap();
+        let mut p = AddressPattern::default();
+        p.add_leading(&parse_hex_nibbles("dead").unwrap()).unwrap();
+        p.add_suffix(&parse_hex_nibbles("beef").unwrap()).unwrap();
+        p.add_template("de.d").unwrap();
+        assert!(matches(&p, &addr));
+        assert_eq!(p.fixed_nibbles(), 8);
+
+        // Conflicting constraint on the same nibble is rejected.
+        let mut p = AddressPattern::default();
+        p.add_leading(&parse_hex_nibbles("dead").unwrap()).unwrap();
+        assert!(p.add_template("beef").is_err());
+    }
+
+    #[test]
+    fn template_string_canonical() {
+        let mut p = AddressPattern::default();
+        p.add_leading(&parse_hex_nibbles("dead").unwrap()).unwrap();
+        p.add_suffix(&parse_hex_nibbles("beef").unwrap()).unwrap();
+        assert_eq!(p.template_string(), format!("dead{}beef", ".".repeat(32)));
+        assert!(AddressPattern::default().is_empty());
+        assert!(!p.is_empty());
     }
 
     #[test]

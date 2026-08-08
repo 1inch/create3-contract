@@ -31,7 +31,7 @@ mod neon {
     use core::arch::aarch64::*;
     use rand::Rng;
 
-    use create3_miner::{hex_encode_addr, leading_match, parse_cli, run_search, MatchMode};
+    use create3_miner::{hex_encode_addr, mask_match, parse_cli, run_search, MatchMode};
 
     /// Rotate-left each 64-bit lane by a compile-time constant `$s` (0..=63).
     /// Used only on the base (non-SHA3) path.
@@ -267,7 +267,7 @@ mod neon {
     #[inline(always)]
     fn check(mode: &MatchMode, addr: &[u8; 20], hex_buf: &mut [u8; 40]) -> bool {
         match mode {
-            MatchMode::Leading(nibbles) => leading_match(addr, nibbles),
+            MatchMode::Mask { value, mask } => mask_match(addr, value, mask),
             MatchMode::Regex(re) => {
                 hex_encode_addr(addr, hex_buf);
                 let hex_str = unsafe { std::str::from_utf8_unchecked(hex_buf) };

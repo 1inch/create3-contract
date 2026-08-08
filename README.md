@@ -5,9 +5,10 @@ A CREATE3 deployer contract and a companion tool that mines vanity salts for it.
 The repo has two parts that work together:
 
 1. **The deployer** ([contracts/](contracts/)) — an `Ownable` `Create3Deployer` that deploys contracts at addresses which depend only on the factory address and a salt, independent of the contract's creation code.
-2. **The miner** — a multi-threaded Rust tool that brute-forces a salt so the resulting deploy address matches a pattern you choose. It ships as two binaries that share all logic ([src/lib.rs](src/lib.rs)):
+2. **The miner** — a multi-threaded Rust tool that brute-forces a salt so the resulting deploy address matches a pattern you choose. It ships as three binaries that share all logic ([src/lib.rs](src/lib.rs)):
    - `create3-miner` ([src/main.rs](src/main.rs)) — portable scalar miner, runs everywhere.
    - `create3-miner-neon` ([src/bin/create3-miner-neon.rs](src/bin/create3-miner-neon.rs)) — ARM NEON (aarch64) build that hashes two salts per keccak permutation and, when available, uses the ARMv8 SHA3 crypto extension (fused EOR3/RAX1/XAR/BCAX) with a runtime fallback to base NEON. Roughly **2.5× faster** than the scalar miner on Apple Silicon. This is the default binary for `cargo run`.
+   - `create3-miner-metal` ([src/bin/create3-miner-metal/main.rs](src/bin/create3-miner-metal/main.rs)) — Apple GPU build that runs one candidate per GPU thread with a bit-interleaved keccak kernel. Roughly **5× faster** than the NEON miner on an M4 Max (~495 MH/s). Supports the fast-path patterns (`--leading` / `--suffix` / `--mask`) but not regex.
 
 ## The deployer
 
@@ -35,10 +36,10 @@ forge script script/DeployCreate3Deployer.s.sol --rpc-url <rpc> --private-key <k
 
 ## The miner
 
-Once the factory is deployed, the miner brute-forces a CREATE3 salt so the deployed contract address matches a pattern. You can match either an exact leading hex prefix (the fast path) or an arbitrary regex.
+Once the factory is deployed, the miner brute-forces a CREATE3 salt so the deployed contract address matches a pattern. You can match fixed hex nibbles with the fast-path flags (`--leading`, `--suffix`, `--mask`, freely combined) or, on the CPU miners, an arbitrary regex.
 
 ```bash
-cargo run --release -- <factory address> <pattern>
+cargo run --release -- <factory address> <regex pattern>
 cargo run --release -- <factory address> --leading <hex prefix>
 ```
 
@@ -47,6 +48,9 @@ cargo run --release -- <factory address> --leading <hex prefix>
 `cargo run` defaults to the faster NEON binary (`default-run` in [`Cargo.toml`](Cargo.toml)). On Apple Silicon / aarch64 you get the 2-wide NEON miner automatically. To pick a binary explicitly:
 
 ```bash
+# Metal GPU miner (macOS only; fastest — fast-path patterns only, no regex)
+cargo run --release --bin create3-miner-metal -- <factory> --leading <hex>
+
 # NEON miner (aarch64 only; the default)
 cargo run --release --bin create3-miner-neon -- <factory> --leading <hex>
 
@@ -54,7 +58,9 @@ cargo run --release --bin create3-miner-neon -- <factory> --leading <hex>
 cargo run --release --bin create3-miner -- <factory> --leading <hex>
 ```
 
-On non-aarch64 platforms `create3-miner-neon` compiles to a stub that exits with a message telling you to use `create3-miner` instead, so the whole workspace still builds everywhere. Both binaries accept identical flags.
+On non-aarch64 platforms `create3-miner-neon`, and on non-macOS platforms `create3-miner-metal`, compile to stubs that exit with a message telling you to use `create3-miner` instead, so the whole workspace still builds everywhere. All three binaries accept the same pattern and proxy flags (regex is CPU-only).
+
+The CPU and GPU miners are independent — each starts from its own random salt prefix — so you can run `create3-miner-metal` and `create3-miner-neon` at the same time and add their hash rates.
 
 At startup the NEON binary prints which keccak backend it selected (`NEON+SHA3` or `NEON`) and the buffer width. The SHA3 extension is detected at runtime (`is_aarch64_feature_detected!("sha3")`); on chips without it the miner transparently falls back to base NEON. Two NEON-only flags are available:
 
@@ -63,35 +69,52 @@ At startup the NEON binary prints which keccak backend it selected (`NEON+SHA3` 
 
 The repo ships a [`.cargo/config.toml`](.cargo/config.toml) that builds with `-C target-cpu=native`, so release builds automatically use chip-specific instructions (e.g. NEON on Apple Silicon) for extra throughput. No environment variables are needed; a plain `cargo build --release` or `cargo run --release` picks it up. The resulting binary is tuned for the build machine and is not portable to other CPUs.
 
-### Leading prefix (fast path)
+### Fast-path patterns (`--leading` / `--suffix` / `--mask`)
 
-For a vanity prefix, prefer `--leading`. It compares the address bytes directly, skipping hex encoding and the regex engine, which is a few percent faster on long searches. The prefix is case-insensitive and may include an optional `0x`.
+These flags constrain fixed hex nibbles and are compared directly on the address bytes, skipping hex encoding and the regex engine. They are supported by all three binaries (including the Metal GPU miner) and are all case-insensitive with an optional `0x`. They can be combined freely — the constraints are AND-ed into one pattern — as long as they don't disagree on a nibble.
+
+- `--leading <hex>` — anchor at the start of the address.
+- `--suffix <hex>` — anchor at the end of the address.
+- `--mask <template>` — a left-anchored 40-char template of hex digits and `.` wildcards, e.g. `dead....beef`.
 
 ```bash
 # Address starts with nine zeros
 cargo run --release -- 0x9fBB3DF7C40Da2e5A0dE984fFE2CCB7C47cd0ABf --leading 000000000
 
-# Address starts with dead
-cargo run --release -- 0x9fBB3DF7C40Da2e5A0dE984fFE2CCB7C47cd0ABf --leading dead
+# Address ends with beef
+cargo run --release -- 0x9fBB3DF7C40Da2e5A0dE984fFE2CCB7C47cd0ABf --suffix beef
+
+# Starts with dead and ends with beef
+cargo run --release -- 0x9fBB3DF7C40Da2e5A0dE984fFE2CCB7C47cd0ABf --leading dead --suffix beef
+
+# Template: dead, four free nibbles, then beef
+cargo run --release -- 0x9fBB3DF7C40Da2e5A0dE984fFE2CCB7C47cd0ABf --mask dead....beef
 ```
 
-### Regex (suffixes, anywhere, alternation)
+### Regex (anywhere, alternation) — CPU miners only
 
-The positional pattern is a regex matched against the 40-character lowercase hex address (without the `0x` prefix). Matching is case-insensitive. Use it for anything `--leading` cannot express, such as suffixes or alternation.
+The positional pattern is a regex matched against the 40-character lowercase hex address (without the `0x` prefix). Matching is case-insensitive. Use it for anything the fast-path flags cannot express, such as a match anywhere in the address or alternation. Regex is **not** supported by `create3-miner-metal`; use the fast-path flags there, or run a CPU binary for regex.
 
 ```bash
-# Address ends with beef
-cargo run --release -- 0x9fBB3DF7C40Da2e5A0dE984fFE2CCB7C47cd0ABf 'beef$'
-
 # c0ffee anywhere in the address
-cargo run --release -- 0x9fBB3DF7C40Da2e5A0dE984fFE2CCB7C47cd0ABf 'c0ffee'
+cargo run --release --bin create3-miner-neon -- 0x9fBB3DF7C40Da2e5A0dE984fFE2CCB7C47cd0ABf 'c0ffee'
 
 # Full regex: 8 leading zeros, or dead/beef suffix
-cargo run --release -- 0x9fBB3DF7C40Da2e5A0dE984fFE2CCB7C47cd0ABf '^0{8}'
-cargo run --release -- 0x9fBB3DF7C40Da2e5A0dE984fFE2CCB7C47cd0ABf '(dead|beef)$'
+cargo run --release --bin create3-miner-neon -- 0x9fBB3DF7C40Da2e5A0dE984fFE2CCB7C47cd0ABf '^0{8}'
+cargo run --release --bin create3-miner-neon -- 0x9fBB3DF7C40Da2e5A0dE984fFE2CCB7C47cd0ABf '(dead|beef)$'
 ```
 
-You must provide exactly one of the positional regex or `--leading`.
+You must provide at least one matcher: a positional regex, or any combination of `--leading` / `--suffix` / `--mask`.
+
+### Metal GPU miner (`create3-miner-metal`)
+
+The Metal miner runs one candidate per GPU thread and dispatches them in batches. At startup it prints the selected device and batch size. One NEON-style flag is Metal-only:
+
+- `--batch <N>` — attempts per GPU dispatch (default `4194304`). Larger batches amortize dispatch overhead; smaller ones tighten the progress cadence and keep the GPU watchdog happy. Every reported match is re-derived and verified on the CPU before it is accepted.
+
+```bash
+cargo run --release --bin create3-miner-metal -- <factory> --leading 00000000
+```
 
 ### Thread count
 
@@ -152,13 +175,18 @@ The contract will land on the printed address regardless of its creation code.
 
 By default the miner uses all CPU cores (override with `--threads`); each worker starts from a random salt and increments sequentially, reusing preallocated hash buffers (two keccak256 per attempt). The NEON binary hashes two salts per keccak permutation by packing each state into 128-bit lanes (2 × `u64`), precomputes the constant input words so only the salt counter is rewritten per attempt, and on SHA3-capable chips uses the fused EOR3/RAX1/XAR/BCAX instructions. Every additional constrained hex character multiplies the expected search time by 16.
 
-Indicative throughput at 8 threads on an Apple Silicon laptop (single `--leading` search):
+The Metal miner ([src/bin/create3-miner-metal/](src/bin/create3-miner-metal/)) instead runs one candidate per GPU thread, hashing in bit-interleaved form (even/odd bits of each 64-bit lane split across a `uint2`) so each 64-bit keccak rotation becomes two 32-bit rotations on the GPU's 32-bit ALUs.
+
+Indicative throughput on an Apple Silicon laptop (single `--leading` search):
 
 | Build | MH/s | vs scalar |
 | ----- | ---- | --------- |
 | `create3-miner` (scalar `sha3` crate) | ~25 | 1.0× |
 | `create3-miner-neon --no-sha3` (base NEON x2) | ~47 | ~1.9× |
 | `create3-miner-neon` (NEON + SHA3 ext) | ~61 | ~2.5× |
+| `create3-miner-metal` (M4 Max, 40-core GPU) | ~495 | ~20× |
+
+(The NEON figures are from an 8-thread laptop; on an M4 Max the NEON miner does ~101 MH/s across all 16 cores, so the GPU is roughly 5× the NEON miner on the same machine.)
 
 Expected attempts per constrained-character count:
 
@@ -170,9 +198,9 @@ Expected attempts per constrained-character count:
 
 A progress line with the total attempt count and hash rate is printed to stderr every 5 seconds.
 
-### GPU feasibility
+### GPU keccak benchmark
 
-[bench/metal-keccak](bench/metal-keccak/) is a standalone Metal microbenchmark measuring raw keccak-f[1600] throughput on the Apple GPU, used to size up a potential Metal port of the miner. On an M4 Max (40-core GPU) the bit-interleaved kernel sustains ~1.05 G permutations/s (~523 MH/s miner-equivalent) versus ~101 MH/s for this NEON miner on all 16 CPU cores — roughly 5x headroom.
+[bench/metal-keccak](bench/metal-keccak/) is a standalone Metal microbenchmark measuring raw keccak-f[1600] throughput on the Apple GPU. It was used to size up the Metal port before writing it: on an M4 Max (40-core GPU) the bit-interleaved kernel sustains ~1.05 G permutations/s (~523 MH/s miner-equivalent), and the finished `create3-miner-metal` reaches ~495 MH/s — within ~5% of that ceiling once the two-stage CREATE3 derivation and matching are added.
 
 ## Tests
 
@@ -184,4 +212,4 @@ cargo test --release
 forge test
 ```
 
-The Rust suite includes a derivation vector cross-checked against foundry's `cast create2` / `cast keccak`, NEON-vs-scalar equivalence tests for the batched keccak and address derivation, and the Foundry suite cross-checks `addressOf` against the miner's derivation.
+The Rust suite includes a derivation vector cross-checked against foundry's `cast create2` / `cast keccak`, NEON-vs-scalar and Metal-vs-scalar equivalence tests for the batched keccak and address derivation (the GPU tests skip automatically when no Metal device is present), and the Foundry suite cross-checks `addressOf` against the miner's derivation. All three binaries have been end-to-end verified against the live mainnet factory `0x71481c3b9c6fba3066ae84961ea22378a80cabe7`: mined salts feed back into its on-chain `addressOf(bytes32)` and reproduce the mined address exactly.
